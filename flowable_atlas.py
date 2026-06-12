@@ -855,6 +855,9 @@ FIELD_RE = re.compile(r"(?:private|protected|public)\s+(?:static\s+)?(?:final\s+
 # Process/case variables touched from Java: (set|get|has|remove)Variable[Local]("name", ...)
 # — the variable name is the first string-literal arg (optionally after an id arg).
 JAVA_VAR_RE = re.compile(r'\b(?:set|get|has|remove)Variable(?:Local)?\s*\(\s*(?:[^,"]+,\s*)?"([A-Za-z_]\w*)"')
+# String literals in Java — matched against model keys to draw CODE -> MODEL references
+# (e.g. processDefinitionKey("APP-P012"), caseDefinitionKey("..."), or a bare key literal).
+JAVA_STR_RE = re.compile(r'"([^"\\\n]{2,80})"')
 
 
 def _decap(name):
@@ -965,6 +968,7 @@ def parse_java(text, ffile):
             "isController": is_controller, "isGlue": bool(interfaces & GLUE_INTERFACES),
             "endpoints": endpoints, "methods": methods, "deps": deps, "botKey": bot_key,
             "vars": sorted(set(JAVA_VAR_RE.findall(text))),
+            "strings": set(JAVA_STR_RE.findall(text)),
             "line": line_of(class_decl_idx) if class_decl_idx != -1 else 1}
 
 
@@ -1351,6 +1355,14 @@ def _build_graph(result, ctx, resolved, all_java, bean_methods, by_key):
     for o in result["others"]:
         add_node(o.get("modelType", "other"), o.get("key"), o.get("name"), o.get("file"), o)
 
+    # all model keys (for CODE -> MODEL references: Java string literals == a model key)
+    model_keys = set()
+    for bucket in ("apps", "processes", "cases", "decisions", "forms", "dataObjects", "services",
+                   "agents", "channels", "events", "dictionaries", "policies", "actions", "others"):
+        for o in result[bucket]:
+            if o.get("key"):
+                model_keys.add(o["key"])
+
     # --- which java classes are referenced by models (so we can include them) ---
     referenced_java = {r["targetFqn"] for r in resolved if r.get("targetFqn")}
     # functional roles: a bean wired via delegateExpression / a listener expression
@@ -1384,7 +1396,8 @@ def _build_graph(result, ctx, resolved, all_java, bean_methods, by_key):
         return add_node("java", jc["fqn"], jc["primary"], jc["file"], data)
 
     for fqn, jc in all_java.items():
-        if (jc["roles"] - {"other"}) or fqn in referenced_java or jc.get("vars"):
+        if ((jc["roles"] - {"other"}) or fqn in referenced_java or jc.get("vars")
+                or (jc.get("strings", set()) & model_keys)):
             java_node(jc)
 
     # index java simple-name -> fqn for dependency (DI) edges
@@ -1586,6 +1599,8 @@ def _build_graph(result, ctx, resolved, all_java, bean_methods, by_key):
             add_edge(f"java:{ep['controllerFqn']}", f"endpoint:{ep['http']} {ep['path']}", "serves")
 
     # java -> java dependency wiring (constructor / field injection)
+    # + CODE -> MODEL: a Java string literal matching a model key references that model
+    #   (e.g. processDefinitionKey("..."), caseDefinitionKey("..."), bare key constants).
     for fqn, jc in all_java.items():
         snode = f"java:{fqn}"
         if snode not in nodes:
@@ -1594,6 +1609,10 @@ def _build_graph(result, ctx, resolved, all_java, bean_methods, by_key):
             dfqn = simple_to_fqn.get(dep)
             if dfqn and dfqn != fqn and f"java:{dfqn}" in nodes:
                 add_edge(snode, f"java:{dfqn}", "uses")
+        for s in jc.get("strings", set()) & model_keys:
+            t = key_to_node.get(s)
+            if t and t.split(":", 1)[0] not in ("liquibase", "java", "endpoint", "group"):
+                add_edge(snode, t, "references")
 
     # action -> bot (botKey): prefer an agent model or the project Java class that
     # implements the bot (BotService.getKey() == botKey), else a platform bot node.
