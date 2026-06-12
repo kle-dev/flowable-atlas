@@ -1027,7 +1027,7 @@ def discover(root):
 def extract(root):
     ctx = {"refs": [], "rest_calls": [], "expr": set(), "mustache": set(),
            "delegate_classes": set(), "access": [], "groups": set(),
-           "expr_use": {}, "mustache_use": {}, "var_use": {}}
+           "expr_use": {}, "mustache_use": {}, "var_use": {}, "query_meta": {}}
     result = {"apps": [], "processes": [], "cases": [], "decisions": [], "forms": [],
               "agents": [], "services": [], "channels": [], "events": [], "dictionaries": [],
               "dataObjects": [], "policies": [], "actions": [], "liquibase": [], "others": [],
@@ -1086,6 +1086,19 @@ def extract(root):
             for m in musts:
                 ctx["mustache_use"].setdefault(m, set()).add(k)
         _collect_declared_vars(ctx, raw, mkeys)
+        # Queries: pull the user groups they gate by + their source index straight from
+        # the raw text (the deployed -bar .query files are invalid JSON — control chars in
+        # the FreeMarker template — so json parsing drops exactly the version with groups).
+        if mtype == "query":
+            km = re.search(r'"key"\s*:\s*"([^"]+)"', raw)
+            if km:
+                meta = ctx["query_meta"].setdefault(km.group(1), {"groups": set(), "sourceIndex": None})
+                gs = set(re.findall(r'seq_contains\(\s*\\?"([A-Za-z0-9_.\-]+)', raw))
+                meta["groups"].update(gs)
+                ctx["groups"].update(gs)
+                si = re.search(r'"sourceIndex"\s*:\s*"([^"]+)"', raw)
+                if si and not meta["sourceIndex"]:
+                    meta["sourceIndex"] = si.group(1)
 
     def _index(mtype, obj, label, key=None):
         key = key if key is not None else (obj.get("key") if isinstance(obj, dict) else None)
@@ -1613,6 +1626,18 @@ def _build_graph(result, ctx, resolved, all_java, bean_methods, by_key):
             t = key_to_node.get(s)
             if t and t.split(":", 1)[0] not in ("liquibase", "java", "endpoint", "group"):
                 add_edge(snode, t, "references")
+
+    # query -> group: enrich from raw-extracted meta, then link to the user groups it gates by
+    for n in list(nodes.values()):
+        if n["type"] == "query":
+            qm = ctx["query_meta"].get(n["key"])
+            if qm:
+                n["data"]["groups"] = sorted(qm["groups"])
+                n["data"]["sourceIndex"] = qm["sourceIndex"] or n["data"].get("sourceIndex")
+            for grp in n["data"].get("groups", []):
+                gid = f"group:{grp}"
+                if gid in nodes:
+                    add_edge(n["id"], gid, "filters-by-group")
 
     # action -> bot (botKey): prefer an agent model or the project Java class that
     # implements the bot (BotService.getKey() == botKey), else a platform bot node.
@@ -2365,6 +2390,7 @@ function describe(n){
   else if(n.type==='java'){ add('Package',d.package); add('Roles',(d.roles||[]).join(', ')); add('Bot key',d.botKey); add('Implements',(d.interfaces||[]).join(', ')); add('Methods',(d.methods||[]).length); add('Called from models',(d.calledMethods||[]).join(', ')); }
   else if(n.type==='endpoint'){ add('Method',d.http); add('Path',d.path); add('Handler',(d.controller||'')+'#'+(d.handler||'')); }
   else if(n.type==='method'){ add('Method',(d.name||'')+'()'); add('Declared in',d.class); }
+  else if(n.type==='query'){ add('Source index',d.sourceIndex); add('Parameters',(d.parameters||[]).join(', ')); add('Filters by groups',(d.groups||[]).length); }
   else if(n.type==='action'){ add('Bot',d.botKey); add('Form',d.formKey); add('Triggers signal',d.signalName); add('Scope',d.scopeType); }
   else if(n.type==='bot'){ add('Kind',d.platform?'Flowable platform bot':'project-defined bot'); }
   else if(n.type==='liquibase'){ add('Tables',(d.tables||[]).join(', ')); }
