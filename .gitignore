@@ -1,0 +1,26 @@
+# Generated analysis artifacts (per-project output — never commit, may contain client data)
+atlas-output/
+*.explorer.html
+*.summary.md
+*.overview.md
+*.graph.json
+APP_OVERVIEW.*
+APP_SUMMARY.*
+APP_EXPLORER.*
+
+# Screenshots / images
+screenshots/
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# Email/distribution bundles (regenerable)
+email/
+
+# Editor / OS / Python
+.idea/
+.vscode/
+.DS_Store
+__pycache__/
+*.pyc
