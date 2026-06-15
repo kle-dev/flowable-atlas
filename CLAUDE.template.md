@@ -119,22 +119,20 @@ environments. The agent does **not** drive Design.
 
 Always mirror an existing similar case — find it via Atlas.
 
-**Golden rule:** follow the **existing patterns in this repo** (naming, package layout, how delegates
-are wired, how forms call REST). Use Atlas to find a similar existing case and mirror it.
-
 ---
 
 ## 4. Project specifics — `<!-- FILL IN -->`
 
-> Fill these in for the concrete project (Atlas tells you most of it).
+> Fill these in for the concrete project. **Atlas auto-fills all of this** if you generate
+> `<project>.CLAUDE.md` (`atlas <dir>`) — prefer that over hand-filling.
 
-- **Repo layout:** `<!-- e.g. models in ./xxx-models, custom Java in ./xxx-customizations, frontend in ./xxx-frontend -->`
+- **Repo layout:** `<!-- where models live, where custom Java lives, where the frontend lives -->`
 - **Key/naming conventions:** `<!-- e.g. processes XXX-P###, cases XXX-C###, forms XXX-F###, services XXX-S### -->`
 - **Build:** `<!-- e.g. ./mvnw clean install -DskipTests -T 1C  /  cd frontend && yarn build -->`
-- **Run locally:** `<!-- e.g. yarn start:work + backend launcher; URL http://localhost:9000 -->`
+- **Run & verify:** `<!-- e.g. yarn start:work + the Spring Boot app module; app auto-deploys its models on startup -->`
 - **Test:** `<!-- e.g. ./mvnw test -pl <module> -am -Dtest=ClassName -->`
-- **Deploy / publish:** `<!-- how this app gets published to Work -->`
 - **Flowable version:** `<!-- e.g. 8.x — matters for available APIs -->`
+- **Wiring examples to mirror:** `<!-- one real case each: a delegate, a listener, a bot, a form→REST call (Atlas lists these) -->`
 - **Conventions / house rules:** `<!-- code style, where business logic goes, what NOT to touch -->`
 
 ---
@@ -154,3 +152,8 @@ are wired, how forms call REST). Use Atlas to find a similar existing case and m
 - **Respect access/security:** candidate groups, app/page permissions and security policies are part of
   the feature, not an afterthought.
 - **Minimal, consistent changes:** mirror existing patterns; touch only what's necessary.
+
+**Common Flowable pitfalls (the knowledge gap):** don't invent engine APIs (verify against deps/docs);
+don't hand-edit the exported app `.zip` (model changes go via Design); mind variable scope
+(`setVariable` vs `setVariableLocal`); never rename a definition `key` without checking who references it
+(both directions); don't forget candidate groups / access on new tasks & pages.

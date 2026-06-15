@@ -2713,25 +2713,19 @@ _CLAUDE_PLATFORM = """## 1. What Flowable is (the mental model an LLM usually ge
 Flowable is a Java process-automation platform. A solution project is custom Java + models that run
 **on top of** the Flowable engines — you extend a platform, you don't build from scratch.
 
-| Product | Role |
-|---|---|
-| **Work** | Runtime **and** end-user frontend (React UI). Executes deployed definitions, renders forms, hosts tasks/cases. Custom Java + REST controllers live here. |
-| **Design** | Visual modeler. Models are editable JSON (BPMN/CMMN/DMN/forms/apps). |
-| **Control / Hub** | Admin/monitoring consoles for Work clusters. |
+- **Work** = the **runtime *and* the end-user React frontend** (executes definitions, renders forms,
+  hosts tasks/cases). Custom Java + REST controllers run here. **Design** = the visual modeler.
+  (Control/Hub = admin consoles.) Engines: BPMN (processes), CMMN (cases), DMN (decisions), Form, IDM.
 
-**Models vs Definitions (the key concept):** models are mutable design-time JSON (`ACT_DE_*`); when
-deployed they become **immutable, versioned Definitions** (`ACT_RE_*`). Runtime state is in `ACT_RU_*`,
-history in `ACT_HI_*`, users/groups in `ACT_ID_*`. Everything is referenced by **key**
-(process/case/form/decision key) — cross-references between models, from Java, and from the frontend are
-all by key.
+**Models vs Definitions (the key concept):** models are mutable design-time JSON; when deployed they
+become **immutable, versioned Definitions** (stored in the DB's `ACT_*` tables — rarely touched
+directly; use the engine services/APIs). Everything is referenced by **key** (process/case/form/decision
+key) — cross-references between models, from Java, and from the frontend are all by key.
 
 **In a solution project, models are authored in Design and *exported into this repo*** — the `.app`/`.zip`
 and model files under `src/main/resources` are **exported build artifacts**, not the editing surface.
 The Java app is built **together with** the bundled model and deploys it to Work on startup. The canonical
 place to *change* a model is Flowable **Design**, then re-export.
-
-Engines: BPMN (processes), CMMN (cases), DMN (decisions), Form, Content, IDM, plus platform engines
-(data objects, actions, agents, indexing).
 
 ## 2. How custom code attaches to models (extension points)
 
@@ -2773,6 +2767,11 @@ _CLAUDE_RULES = """## 5. Rules for the agent
 - **Keys are contracts:** models/Java/frontend reference definitions by key. Before renaming a key, check the graph for who references it (both directions).
 - **Respect access/security:** candidate groups, app/page permissions and security policies are part of the feature.
 - **Minimal, consistent changes:** mirror existing patterns; touch only what's necessary.
+
+**Common Flowable pitfalls (the knowledge gap):** don't invent engine APIs (verify against deps/docs);
+don't hand-edit the exported app `.zip` (model changes go via Design); mind variable scope
+(`setVariable` vs `setVariableLocal`); never rename a definition `key` without checking who references it
+(both directions); don't forget candidate groups / access on new tasks & pages.
 """
 
 
@@ -2844,8 +2843,7 @@ def claude_render(result, root):
         L.append("- **Key conventions:** " + "; ".join(convs))
     starts = sorted({a["model"] for a in result.get("access", []) if a["action"] == "start"})
     if starts:
-        more = f" … (+{len(starts) - 12} more)" if len(starts) > 12 else ""
-        L.append("- **Startable entry points:** " + ", ".join(f"`{k}`" for k in starts[:12]) + more)
+        L.append(f"- **Startable entry points:** {len(starts)} processes/cases — see `{name}.summary.md`.")
     # build / version detection
     if os.path.isdir(root):
         ex = lambda *p: os.path.exists(os.path.join(root, *p))
@@ -2861,6 +2859,29 @@ def claude_render(result, root):
                 break
         if b:
             L.append("- **Build/test:** " + "; ".join(b))
+        # run & verify loop (detect frontend start script + a backend app module)
+        run = []
+        fe_dir = next((d for d in ("frontend", "ui", "web", "src/main/frontend") if ex(d, "package.json")), None)
+        if fe_dir:
+            try:
+                with open(os.path.join(root, fe_dir, "package.json"), "r", encoding="utf-8") as fh:
+                    scripts = (json.load(fh).get("scripts") or {})
+                cand = [k for k in scripts if k.startswith("start")] or [k for k in scripts if k in ("dev", "serve")]
+                if cand:
+                    run.append(f"frontend `cd {fe_dir} && yarn {sorted(cand)[0]}`")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            appmod = next((d for d in sorted(os.listdir(root))
+                           if os.path.isdir(os.path.join(root, d))
+                           and (d.endswith(("-app", "-work", "-workflow", "-runtime")))), None)
+        except Exception:  # noqa: BLE001
+            appmod = None
+        if appmod:
+            run.append(f"backend = Spring Boot app in `{appmod}/`")
+        L.append("- **Run & verify:** " + (("; ".join(run) + "; ") if run else "")
+                 + "the app auto-deploys its bundled models on startup — exercise the change in the Work UI, "
+                 "or cover backend logic with a test.")
         ver = None
         try:
             if ex("pom.xml"):
@@ -2874,6 +2895,38 @@ def claude_render(result, root):
         except Exception:  # noqa: BLE001
             ver = None
         L.append(f"- **Flowable version:** {ver if ver else 'see pom.xml / dependencies (not auto-detected)'}")
+
+    # Concrete wiring examples, auto-picked from the resolved graph — mirror these for new code.
+    rr = result.get("resolvedRefs", [])
+
+    def _first(pred):
+        return next((r for r in rr if pred(r)), None)
+
+    def _cls(fqn):
+        return fqn.split(".")[-1] if fqn else fqn
+
+    ex = []
+    d = _first(lambda r: r["rel"] == "serviceTask-delegate" and r.get("targetFqn"))
+    if d:
+        ex.append(f"- **Delegate:** process `{d['from']}` → `${{{d['value']}}}` → `{_cls(d['targetFqn'])}` (`{d['targetFqn']}`)")
+    ls = _first(lambda r: r["rel"].startswith(("taskListener", "executionListener", "planItemLifecycleListener"))
+                and r.get("targetFqn"))
+    if ls:
+        ex.append(f"- **Listener:** `{ls['from']}` → `{_cls(ls['targetFqn'])}` ({ls['rel']})")
+    cm = _first(lambda r: r["rel"].startswith("calls ") and r.get("targetFqn"))
+    if cm:
+        ex.append(f"- **Expression → method:** `{cm['from']}` → `${{{cm['value']}.{cm['rel'][6:].rstrip('()')}(…)}}` → `{_cls(cm['targetFqn'])}`")
+    bote = next((e for e in result["graph"]["edges"] if e["rel"] == "bot" and e["t"].startswith("java:")), None)
+    if bote:
+        ex.append(f"- **Bot:** action `{bote['s'].split(':', 1)[1]}` → `{bote['t'].split('.')[-1]}` (BotService)")
+    rc = next((r for r in result.get("restCalls", []) if r.get("matches")), None)
+    if rc:
+        url = (rc["url"][:60] + "…") if len(rc["url"]) > 60 else rc["url"]
+        ex.append(f"- **Form → REST:** `{rc['source']}` calls `{rc['method']} {url}` → {rc['matches'][0]}")
+    if ex:
+        L.append("\n**Wiring examples in this project — mirror these for new code:**")
+        L.extend(ex)
+
     L.append("")
     L.append("> `<!-- Add house rules: code style, where business logic goes, what NOT to touch, "
              "how this app is deployed/published to Work. -->`\n")
