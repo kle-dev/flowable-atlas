@@ -2707,6 +2707,181 @@ def summary_render(result, root):
     return "\n".join(L)
 
 
+# --- CLAUDE.md generator: generic Flowable primer + this project's discovered facts ---
+_CLAUDE_PLATFORM = """## 1. What Flowable is (the mental model an LLM usually gets wrong)
+
+Flowable is a Java process-automation platform. A solution project is custom Java + models that run
+**on top of** the Flowable engines — you extend a platform, you don't build from scratch.
+
+| Product | Role |
+|---|---|
+| **Work** | Runtime **and** end-user frontend (React UI). Executes deployed definitions, renders forms, hosts tasks/cases. Custom Java + REST controllers live here. |
+| **Design** | Visual modeler. Models are editable JSON (BPMN/CMMN/DMN/forms/apps). |
+| **Control / Hub** | Admin/monitoring consoles for Work clusters. |
+
+**Models vs Definitions (the key concept):** models are mutable design-time JSON (`ACT_DE_*`); when
+deployed they become **immutable, versioned Definitions** (`ACT_RE_*`). Runtime state is in `ACT_RU_*`,
+history in `ACT_HI_*`, users/groups in `ACT_ID_*`. Everything is referenced by **key**
+(process/case/form/decision key) — cross-references between models, from Java, and from the frontend are
+all by key.
+
+**In a solution project, models are authored in Design and *exported into this repo*** — the `.app`/`.zip`
+and model files under `src/main/resources` are **exported build artifacts**, not the editing surface.
+The Java app is built **together with** the bundled model and deploys it to Work on startup. The canonical
+place to *change* a model is Flowable **Design**, then re-export.
+
+Engines: BPMN (processes), CMMN (cases), DMN (decisions), Form, Content, IDM, plus platform engines
+(data objects, actions, agents, indexing).
+
+## 2. How custom code attaches to models (extension points)
+
+- **Service tasks / JavaDelegate** — `flowable:class="com.acme.X"` or `flowable:delegateExpression="${bean}"` (a Spring `@Component`/`@Service`).
+- **Expressions** — `${bean.method(args)}` (backend, JUEL) in conditions/listeners/fields; `{{ ... }}` (frontend) in forms/pages.
+- **Listeners** — Execution/Task/PlanItemLifecycle/CaseInstanceLifecycle/FlowableEventListener.
+- **REST controllers** — `@RestController` endpoints the Work frontend (forms, data tables, buttons) calls.
+- **Bots** (`BotService`) — invoked by **Actions** (`.action` models, via `botKey`).
+- **Service-registry data objects** — `.data` backed by a `.service` (REST/DB); DB-backed map to **Liquibase** tables.
+- **Forms** — bind fields to **variables**; outcomes drive flow; can call REST for options/data tables.
+- **Queries** (`.query`) — index queries (tasks/case-instances/…), often gated by **user group**.
+- **Variables** — set in Java (`execution.setVariable(...)`), init-var mappings, in/out params, sequences; read in expressions.
+- **Access** — candidate (starter) groups, task candidate groups/assignees, app/page permissions, security policies.
+
+## 3. How models, code and deployment fit together (important — easy to get wrong)
+
+- **Models are authored in Design, not here.** A modeler builds BPMN/CMMN/forms/etc. in Flowable
+  **Design**, then **exports/publishes the app into this repo**. Treat the repo's model files as
+  exported artifacts — don't hand-edit the deployed `.zip` as if you own it; model changes normally
+  go back through Design and are re-exported.
+- **Build = your Java + the bundled model, together.** The Maven build packages the custom Java **and**
+  the exported app; on deploy/startup the app **auto-deploys** its definitions to Work.
+- **Deploy via the built artifact, environment by environment** (dev → test → **prod**, via CI/CD). You
+  typically do **not** publish from Design straight to Production — Design-publish is a dev-time
+  convenience; production receives the built-and-deployed app.
+
+**Your lane as an agent:** implement/adjust the **custom Java** (delegates, beans, listeners, REST
+controllers, bots) to match the models, and **read** the models to understand the wiring. If a feature
+needs a model change (new task/form/variable/decision), **say so explicitly and describe it** — it's
+made in Design and re-exported, unless this project's convention is to edit the model files directly
+(check existing commits/patterns first). Always mirror an existing similar case — find it via Atlas.
+"""
+
+_CLAUDE_RULES = """## 5. Rules for the agent
+
+- **Understand before coding:** summary → graph → source. State which existing process/case/form/bean your feature builds on.
+- **Verify, don't hallucinate:** Flowable APIs differ across versions — confirm class/method names against the actual dependencies and https://documentation.flowable.com; don't invent engine APIs.
+- **Match model ↔ code:** a `delegateExpression`/`flowable:class` in a model needs the bean/class to exist (and vice-versa). The graph's unresolved references show mismatches.
+- **Keys are contracts:** models/Java/frontend reference definitions by key. Before renaming a key, check the graph for who references it (both directions).
+- **Respect access/security:** candidate groups, app/page permissions and security policies are part of the feature.
+- **Minimal, consistent changes:** mirror existing patterns; touch only what's necessary.
+"""
+
+
+def claude_render(result, root):
+    from collections import Counter
+    name = os.path.splitext(os.path.basename(os.path.abspath(str(root).rstrip("/"))))[0] or "project"
+    s = result["stats"]
+    nodes = result["graph"]["nodes"]
+    by_type = {}
+    for n in nodes:
+        by_type.setdefault(n["type"], []).append(n)
+    MODEL = {"app", "process", "case", "decision", "form", "page", "dataObject", "dataDictionary",
+             "service", "agent", "channel", "event", "action", "query", "template", "sequence",
+             "securityPolicy", "variableExtractor", "masterData", "document", "dashboardComponent"}
+
+    def folder(f):
+        f = (f or "").split("!")[0]
+        return f.rsplit("/", 1)[0] if "/" in f else "."
+
+    def keypat(t):
+        keys = [n["key"] for n in by_type.get(t, []) if n.get("key")]
+        if not keys:
+            return None
+        pat = Counter(re.sub(r"\d+", "#", k) for k in keys).most_common(1)[0][0]
+        example = next((k for k in keys if re.sub(r"\d+", "#", k) == pat), keys[0])
+        return f"`{pat}` (e.g. `{example}`)"
+
+    L = [f"# CLAUDE.md — `{name}` (Flowable solution project)\n",
+         "_Auto-generated by Flowable Atlas: a generic Flowable primer + this project's discovered map. "
+         "Regenerate with `atlas <project-dir>`. Edit freely — re-running overwrites only the Atlas copy._\n"]
+
+    # §0 — start here, pointing at the actual artifact filenames
+    L.append("## 0. Understand this project — start here\n")
+    L.append("Don't guess — build the picture in order:")
+    L.append(f"1. Read **`{name}.summary.md`** — apps, inventory, entry points, integrations, hotspots.")
+    L.append(f"2. Query **`{name}.graph.json`** for specific questions (what calls X, who uses variable Y, "
+             "which controller serves form Z) — relationships are bidirectional (model↔code).")
+    L.append(f"3. Open **`{name}.explorer.html`** for the clickable view.")
+    L.append("4. Read the actual source to verify, then implement.\n")
+
+    L.append(_CLAUDE_PLATFORM)
+
+    # §4 — discovered facts
+    L.append("## 4. This project (auto-discovered by Atlas)\n")
+    L.append(f"- **Scale:** {s['models']} model files · {s['java']} Java files · "
+             f"{s.get('nodes', 0)} graph nodes · {s.get('edges', 0)} relationships · {s.get('groups', 0)} user groups.")
+    if by_type.get("app"):
+        L.append("- **Apps:** " + ", ".join(f"{a['label']} (`{a['key']}`)" for a in by_type["app"]))
+    order = ["process", "case", "decision", "form", "page", "dataObject", "service", "agent",
+             "channel", "event", "action", "query", "template", "sequence", "variableExtractor"]
+    inv = " · ".join(f"{len(by_type[t])} {t}" for t in order if by_type.get(t))
+    if inv:
+        L.append("- **Models:** " + inv)
+    jr = Counter()
+    for n in by_type.get("java", []):
+        for r in (n["data"].get("roles") or []):
+            jr[r] += 1
+    if jr:
+        L.append("- **Java by role:** " + " · ".join(f"{c} {r}" for r, c in jr.most_common()))
+    mf = Counter(folder(n.get("file")) for n in nodes if n["type"] in MODEL and n.get("file"))
+    jf = Counter(folder(n.get("file")) for n in by_type.get("java", []) if n.get("file"))
+    if mf:
+        L.append("- **Models live in:** " + ", ".join(f"`{d}/` ({c})" for d, c in mf.most_common(5)))
+    if jf:
+        L.append("- **Java lives in:** " + ", ".join(f"`{d}/` ({c})" for d, c in jf.most_common(5)))
+    convs = [f"{t} {p}" for t in ("process", "case", "form", "decision", "service", "dataObject", "query")
+             for p in [keypat(t)] if p]
+    if convs:
+        L.append("- **Key conventions:** " + "; ".join(convs))
+    starts = sorted({a["model"] for a in result.get("access", []) if a["action"] == "start"})
+    if starts:
+        more = f" … (+{len(starts) - 12} more)" if len(starts) > 12 else ""
+        L.append("- **Startable entry points:** " + ", ".join(f"`{k}`" for k in starts[:12]) + more)
+    # build / version detection
+    if os.path.isdir(root):
+        ex = lambda *p: os.path.exists(os.path.join(root, *p))
+        b = []
+        if ex("mvnw") or ex("pom.xml"):
+            b.append("Maven — `./mvnw clean install -DskipTests -T 1C`; tests `./mvnw test -pl <module> -am -Dtest=Class` "
+                     "(use `-am` on scoped builds)")
+        if ex("gradlew") or ex("build.gradle"):
+            b.append("Gradle — `./gradlew build`")
+        for fe in ("frontend", "ui", "web", "src/main/frontend"):
+            if ex(fe, "package.json"):
+                b.append(f"Frontend — `cd {fe} && yarn install && yarn build`")
+                break
+        if b:
+            L.append("- **Build/test:** " + "; ".join(b))
+        ver = None
+        try:
+            if ex("pom.xml"):
+                with open(os.path.join(root, "pom.xml"), "r", encoding="utf-8", errors="replace") as fh:
+                    pom = fh.read()
+                m = (re.search(r"<flowable(?:[.-]engine|[.-]bom|[.-]platform)?\.version>\s*([0-9][^<\s]+)", pom)
+                     or re.search(r"(?:com|org)\.flowable\b[^<]*</groupId>\s*<artifactId>[^<]*</artifactId>"
+                                  r"\s*<version>\s*([0-9][^<\s]+)", pom, re.S))
+                cand = m.group(1).strip() if m else None
+                ver = cand if cand and re.match(r"^[6-9]\.", cand) else None  # Flowable engine majors
+        except Exception:  # noqa: BLE001
+            ver = None
+        L.append(f"- **Flowable version:** {ver if ver else 'see pom.xml / dependencies (not auto-detected)'}")
+    L.append("")
+    L.append("> `<!-- Add house rules: code style, where business logic goes, what NOT to touch, "
+             "how this app is deployed/published to Work. -->`\n")
+
+    L.append(_CLAUDE_RULES)
+    return "\n".join(L)
+
+
 def html_render(result, root):
     payload = {"project": os.path.basename(os.path.abspath(root)) or "project",
                "stats": result["stats"],
@@ -2743,6 +2918,8 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true", help="Emit the full traversable graph as JSON")
     ap.add_argument("--html", action="store_true", help="Emit the self-contained interactive HTML explorer")
     ap.add_argument("--summary", action="store_true", help="Emit a compact (~few KB) LLM-first overview")
+    ap.add_argument("--claude", action="store_true",
+                    help="Emit a CLAUDE.md (Flowable primer + this project's discovered facts) for AI agents")
     ap.add_argument("--stdout", action="store_true", help="Print to stdout instead of writing a file")
     ap.add_argument("--open", dest="open_", action="store_true", help="Open the HTML explorer when done")
     args = ap.parse_args(argv)
@@ -2763,6 +2940,7 @@ def main(argv=None):
             (f"{name}.overview.md", render(result, args.path)),
             (f"{name}.graph.json", json.dumps(result, indent=2, ensure_ascii=False, default=list)),
             (f"{name}.explorer.html", html_render(result, args.path)),
+            (f"{name}.CLAUDE.md", claude_render(result, args.path)),
         ]
         written = []
         for fn, content in artifacts:
@@ -2778,7 +2956,9 @@ def main(argv=None):
             _open_file(next(p for p in written if p.endswith(".html")))
         return 0
 
-    if args.summary:
+    if args.claude:
+        out, ext = claude_render(result, args.path), "CLAUDE.md"
+    elif args.summary:
         out, ext = summary_render(result, args.path), "summary.md"
     elif args.html:
         out, ext = html_render(result, args.path), "html"
@@ -2794,7 +2974,8 @@ def main(argv=None):
         target = args.output
     else:
         base = args.path if os.path.isdir(args.path) else os.path.dirname(os.path.abspath(args.path)) or "."
-        target = os.path.join(base, f"APP_OVERVIEW.{ext}")
+        # --claude single mode writes a ready-to-drop-in CLAUDE.md, not APP_OVERVIEW.CLAUDE.md
+        target = os.path.join(base, "CLAUDE.md" if args.claude else f"APP_OVERVIEW.{ext}")
     with open(target, "w", encoding="utf-8") as fh:
         fh.write(out)
     print(f"wrote {target} — {s['models']} models, {s['java']} java files, "

@@ -6,6 +6,7 @@ Map **any** Flowable project (app models **+** Java code) into:
 - ⚡ **`<project>.summary.md`** — a compact (~few KB) LLM-first overview: apps, inventory, entry points, integrations, hotspots, external surface.
 - 📄 **`<project>.overview.md`** — the full human/LLM Markdown report (every model, relationship and the access map).
 - 🕸️ **`<project>.graph.json`** — the full traversable model↔code graph for agents/LLMs to query.
+- 🤖 **`<project>.CLAUDE.md`** — drop-in context for AI agents: a generic Flowable primer **+** this project's auto-discovered facts (apps, inventory, where models/Java live, key conventions, entry points, build). Copy it into your project root as `CLAUDE.md` so an agent understands Flowable *and* this app. (See `CLAUDE.template.md` for the generic, hand-editable version.)
 
 No dependencies — just **Python 3**. Works on a project directory, on loose model files, and on exported `.zip` / `.bar` archives.
 
@@ -48,8 +49,9 @@ Whatever can't be resolved in the project (Flowable platform beans, external RES
 python3 flowable_atlas.py <project> --summary --stdout     # compact overview to stdout
 python3 flowable_atlas.py <project> --html  -o explorer.html
 python3 flowable_atlas.py <project> --json  -o graph.json
+python3 flowable_atlas.py <project> --claude               # writes a ready-to-use CLAUDE.md
 python3 flowable_atlas.py <project>                         # full Markdown report (default)
-python3 flowable_atlas.py <project> --all   -o ./out        # all four (what ./atlas does)
+python3 flowable_atlas.py <project> --all   -o ./out        # all artifacts (what ./atlas does)
 ```
 
 ## For LLMs / agents

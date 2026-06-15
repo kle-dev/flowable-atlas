@@ -35,10 +35,12 @@ Outputs (in the output dir, default ./atlas-output/<project>/):
   <project>.summary.md      compact LLM overview
   <project>.overview.md     full Markdown report
   <project>.graph.json      traversable graph (for agents/LLMs)
+  <project>.CLAUDE.md       AI-agent context (Flowable primer + this project's facts)
 
 Advanced (run the Python directly for single artifacts):
   $PY "$SCRIPT_DIR/flowable_atlas.py" <project> --summary --stdout
   $PY "$SCRIPT_DIR/flowable_atlas.py" <project> --json -o graph.json
+  $PY "$SCRIPT_DIR/flowable_atlas.py" <project> --claude        # writes CLAUDE.md
 EOF
   exit 0
 fi

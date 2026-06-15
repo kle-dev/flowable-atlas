@@ -7,6 +7,8 @@ atlas-output/
 APP_OVERVIEW.*
 APP_SUMMARY.*
 APP_EXPLORER.*
+*.CLAUDE.md
+/CLAUDE.md
 
 # Screenshots / images
 screenshots/
