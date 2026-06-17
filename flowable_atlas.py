@@ -69,6 +69,16 @@ METHOD_CALL_RE = re.compile(r"(?<![\w.$])([A-Za-z_][\w]*)\s*\.\s*[A-Za-z_][\w]*\
 METHOD_CALL_FULL_RE = re.compile(r"(?<![\w.$])([A-Za-z_][\w]*)\s*\.\s*([A-Za-z_][\w]*)\s*\(")
 STR_LIT_RE = re.compile(r"'([^']*)'|\"([^\"]*)\"")   # string literals inside expressions/bindings
 ROOT_IDENT_RE = re.compile(r"(?<![\w.$])([A-Za-z_][\w]*)")
+# Variable names referenced from a script body — action `config.scriptInfo.script`,
+# BPMN/CMMN scriptTask <script> bodies, and script listeners. Two high-signal,
+# quote-style-agnostic idioms: the Flowable API (flw.getInput/setOutput/
+# setTransientOutput(..)) and the legacy execution/*Variable(..) calls. Bare
+# identifiers are intentionally NOT harvested here (locals / loop vars / keywords
+# make them too noisy) — that is a separate, opt-in pass.
+SCRIPT_VAR_RE = re.compile(
+    r"\b(?:(?:get|set)(?:Transient)?(?:Input|Output)"
+    r"|(?:set|get|has|remove)(?:Transient)?Variable(?:Local)?)"
+    r"\s*\(\s*['\"]([A-Za-z_]\w*)['\"]")
 
 FLOWABLE_CONTEXT = {
     "execution", "task", "caseInstance", "planItemInstance", "processInstance",
@@ -184,7 +194,8 @@ def read_listeners(el):
         for lst in ext.findall(tag):
             out.append({"kind": tag, "event": lst.get("event") or lst.get("targetState"),
                         "class": lst.get("class"), "expression": lst.get("expression"),
-                        "delegateExpression": lst.get("delegateExpression")})
+                        "delegateExpression": lst.get("delegateExpression"),
+                        "script": child_text(lst, "script")})
     return out
 
 
@@ -210,6 +221,7 @@ def collect_listener_refs(ctx, frm, ftype, ffile, listeners):
                 for b in re.findall(r"[#$]\{\s*([A-Za-z_][\w]*)", ex):
                     if b not in FLOWABLE_CONTEXT:
                         add_ref(ctx, frm, ftype, ffile, f"{ls['kind']}:{ls.get('event')}", "bean", b)
+        collect_script_vars(ctx, ls.get("script"), [frm])
 
 
 def split_ids(s):
@@ -229,13 +241,13 @@ def add_access(ctx, model, mtype, scope, action, groups=None, users=None):
     ctx["groups"].update(x for x in g if "${" not in x and "{{" not in x)
 
 
-def add_var(ctx, model_key, name):
+def add_var(ctx, model_key, name, bucket="var_use"):
     """Record a plain variable identifier declared/mapped/used by a model."""
     if not model_key or not name:
         return
     name = str(name).strip()
     if re.match(r"^[A-Za-z_]\w*$", name) and name not in FLOWABLE_CONTEXT and name not in JAVA_LITERALS:
-        ctx["var_use"].setdefault(name, set()).add(model_key)
+        ctx[bucket].setdefault(name, set()).add(model_key)
 
 
 # Variables declared/mapped in backend models (BPMN/CMMN): single-purpose attrs,
@@ -267,6 +279,20 @@ def _collect_declared_vars(ctx, raw, mkeys):
     for k in mkeys:
         for n in names:
             add_var(ctx, k, n)
+
+
+def collect_script_vars(ctx, script, mkeys):
+    """Attribute variable names referenced inside a script body to the owning
+    model(s). Covers script-evaluation actions (config.scriptInfo.script),
+    BPMN/CMMN scriptTask <script> bodies and script listeners. Uses SCRIPT_VAR_RE
+    (Flowable API + legacy execution/*Variable idioms) — high-signal and
+    quote-style agnostic; bare identifiers are intentionally NOT harvested."""
+    if not script:
+        return
+    names = {m.group(1) for m in SCRIPT_VAR_RE.finditer(script)}
+    for k in mkeys:
+        for n in names:
+            add_var(ctx, k, n, "script_var_use")
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +403,12 @@ def parse_bpmn(data, ctx, ffile):
                         add_ref(ctx, pkey, "bpmn", ffile, "dataObjectMapping", "dataObject",
                                 dom.get("definitionKey"))
             elif tag == "scriptTask":
-                info["scriptTasks"].append({"id": eid, "name": ename, "format": el.get("scriptFormat")})
+                body = child_text(el, "script")
+                info["scriptTasks"].append({"id": eid, "name": ename,
+                                            "format": el.get("scriptFormat"), "script": body,
+                                            "resultVariable": el.get("resultVariable")})
+                collect_script_vars(ctx, body, [pkey])
+                add_var(ctx, pkey, el.get("resultVariable"))
             elif tag == "businessRuleTask":
                 f = read_fields(el)
                 dref = (el.get("decisionTableReferenceKey") or f.get("decisionTableReferenceKey")
@@ -472,6 +503,12 @@ def _cmmn_def(ctx, case_key, ffile, el):
         d["formKey"] = el.get("formKey")
         if el.get("formKey"):
             add_ref(ctx, case_key, "cmmn", ffile, "task-form", "form", el.get("formKey"))
+        # CMMN script task: <task flowable:type="script"> with the body in a
+        # <flowable:field name="script">. read_fields() surfaces it as "script".
+        if el.get("type") == "script":
+            d["scriptFormat"] = el.get("scriptFormat")
+            d["script"] = read_fields(el).get("script")
+            collect_script_vars(ctx, d["script"], [case_key])
     d["listeners"] = read_listeners(el)
     collect_listener_refs(ctx, case_key, "cmmn", ffile, d["listeners"])
     return d
@@ -746,10 +783,16 @@ def parse_action(data, ctx, ffile):
     # signalName very often equals the process key the action triggers
     add_ref(ctx, key, "action", ffile, "triggers-signal", "process", doc.get("signalName"))
     add_access(ctx, key, "action", "action", "use", ",".join(doc.get("permissionGroups") or []))
+    # Script-evaluation actions (botKey == platform-script-evaluation-bot) embed their
+    # script + language under config.scriptInfo; harvest the variables it touches.
+    script_info = (doc.get("config") or {}).get("scriptInfo") or {}
+    script = script_info.get("script")
+    collect_script_vars(ctx, script, [key])
     return {"key": key, "name": doc.get("name"), "file": ffile, "botKey": doc.get("botKey"),
             "formKey": doc.get("formKey"), "signalName": doc.get("signalName"),
             "channels": doc.get("channels"), "scopeType": doc.get("scopeType"),
-            "icon": doc.get("icon"), "permissionGroups": doc.get("permissionGroups")}
+            "icon": doc.get("icon"), "permissionGroups": doc.get("permissionGroups"),
+            "script": script, "scriptLanguage": script_info.get("language")}
 
 
 def parse_event(data, ctx, ffile):
@@ -1027,7 +1070,8 @@ def discover(root):
 def extract(root):
     ctx = {"refs": [], "rest_calls": [], "expr": set(), "mustache": set(),
            "delegate_classes": set(), "access": [], "groups": set(),
-           "expr_use": {}, "mustache_use": {}, "var_use": {}, "query_meta": {}}
+           "expr_use": {}, "mustache_use": {}, "var_use": {}, "script_var_use": {},
+           "query_meta": {}}
     result = {"apps": [], "processes": [], "cases": [], "decisions": [], "forms": [],
               "agents": [], "services": [], "channels": [], "events": [], "dictionaries": [],
               "dataObjects": [], "policies": [], "actions": [], "liquibase": [], "others": [],
@@ -1469,6 +1513,9 @@ def _build_graph(result, ctx, resolved, all_java, bean_methods, by_key):
     for v, keys in ctx["var_use"].items():            # backend-declared / mapped
         for k in keys:
             add_usage(v, k, "(declared / mapped)")
+    for v, keys in ctx["script_var_use"].items():     # referenced inside a script body
+        for k in keys:
+            add_usage(v, k, "(script)")
     for a in result["apps"]:
         for v in a.get("variables", []):
             if v.get("key"):
