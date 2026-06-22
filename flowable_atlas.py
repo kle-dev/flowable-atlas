@@ -829,7 +829,7 @@ def parse_data_object(data, ctx, ffile):
             "dataObjectType": doc.get("dataObjectType"), "sourceId": doc.get("sourceId"),
             "service": doc.get("referencedServiceDefinitionModelKey"),
             "dictionary": doc.get("referencedDataDictionaryModelKey"),
-            "columns": [{"name": f.get("name"), "label": f.get("label")}
+            "columns": [{"name": f.get("name"), "label": f.get("label"), "type": f.get("type")}
                         for f in (doc.get("fieldMappings") or [])],
             "fields": [f.get("name") for f in (doc.get("fieldMappings") or [])]}
 
@@ -2482,7 +2482,9 @@ function detailExtra(n){
   }
   if(n.type==='dataObject' && (d.columns||[]).length){
     h+='<h3 class="rel">Columns / field mappings ('+d.columns.length+')</h3><div class="oplist">'+
-      d.columns.map(c=>'<div class="oprow"><span>'+esc(c.name)+'</span><span class="muted">'+esc(c.label||'')+'</span></div>').join('')+'</div>';
+      d.columns.map(c=>'<div class="oprow"><span>'+esc(c.name)+'</span><span class="muted">'+esc(c.label||'')+'</span>'+
+        (c.type?'<span class="mono" style="margin-left:auto;color:var(--ink-faint);font-size:10px">'+esc(c.type)+'</span>':'')+
+        '</div>').join('')+'</div>';
   }
   if((n.type==='expression'||n.type==='binding') && (d.usedBy||[]).length){
     h+='<h3 class="rel">Used by ('+d.usedBy.length+')</h3><div class="nodechips">'+d.usedBy.map(nodeChip).join('')+'</div>';
@@ -2587,10 +2589,20 @@ function select(id, pushHist){
 // ---------- search ----------
 const q=document.getElementById('q'), results=document.getElementById('results');
 let resSel=-1, resList=[];
+// search haystack: base identity plus a few type-specific extras. A DataObject's
+// fields/columns are not nodes of their own, so without this a field name like
+// 'crewId' (or its label / type) would never surface its data object.
+function searchText(n){
+  const d=n.data||{};
+  let s=n.label+' '+n.key+' '+(n.file||'')+' '+n.type;
+  if(n.type==='dataObject') s+=' '+(d.fields||[]).join(' ')+' '+
+    (d.columns||[]).map(c=>(c.label||'')+' '+(c.type||'')).join(' ');
+  return s.toLowerCase();
+}
 function doSearch(){
   const v=q.value.trim().toLowerCase();
   if(!v){ results.classList.remove('on'); return; }
-  resList = nodes.filter(n=>(n.label+' '+n.key+' '+(n.file||'')+' '+n.type).toLowerCase().includes(v))
+  resList = nodes.filter(n=>searchText(n).includes(v))
                  .sort((a,b)=> a.label.length-b.label.length).slice(0,40);
   results.innerHTML = resList.map((n,i)=>'<div class="r'+(i===resSel?' sel':'')+'" data-id="'+enc(n.id)+'">'+
     '<span class="dot" style="background:'+color(n.type)+'"></span><span class="nm">'+esc(n.label)+'</span>'+
