@@ -2341,6 +2341,11 @@ nodes.filter(n=>n.type==='java').forEach(n=>{
   if(!beanToNode.has(dc)) beanToNode.set(dc,n.id);
 });
 
+// a form is "unused / unlinked" when nothing functionally references it — i.e. it
+// has no incoming edge other than app 'contains' membership (every form sits in an
+// app, so that edge alone does not count as being used).
+const isUnusedForm = n => n.type==='form' && !(incM.get(n.id)||[]).some(e=>e.rel!=='contains');
+
 // state
 let state = {cat:null, sel:null, hist:[], filter:''};
 
@@ -2368,6 +2373,10 @@ function categories(){
       cats.push({id:t,label:m[0],sec:m[1],color:color(t),count:byType[t].length,match:n=>n.type===t});
     }
   });
+  // a review list: forms that nothing links to (orphaned UI models worth pruning)
+  const unusedForms = nodes.filter(isUnusedForm);
+  if(unusedForms.length) cats.push({id:'unused-form', label:'Forms · unused', sec:'Models',
+    color:color('form'), count:unusedForms.length, match:isUnusedForm});
   cats.sort((a,b)=> (SECTIONS.indexOf(a.sec)-SECTIONS.indexOf(b.sec)) || a.label.localeCompare(b.label));
   return cats;
 }
