@@ -736,28 +736,15 @@ def parse_agent(data, ctx, ffile):
     return info
 
 
-def _operation_params(stype, oc):
-    """Best-effort list of the input parameters an operation requires.
-    database: the explicit inputParameterName of each query/sort column.
-    rest / expression / script / ai / mcp: the variable identifiers referenced via
-    ${ } / #{ } anywhere in the operation config (url, body, headers, expression, …)."""
-    names, seen = [], set()
-
-    def addn(n):
-        if n and n not in seen and n not in FLOWABLE_CONTEXT and n not in JAVA_LITERALS:
-            seen.add(n)
-            names.append(n)
-
-    if stype == "database":
-        for grp in ("queryColumns", "sortColumns"):
-            for c in (oc.get(grp) or []):
-                if isinstance(c, dict):
-                    addn(c.get("inputParameterName"))
-    else:
-        for ex in EXPR_RE.findall(json.dumps(oc)):
-            for v in re.findall(r"[#$]\{\s*([A-Za-z_]\w*)", ex):
-                addn(v)
-    return names
+def _operation_params(op):
+    """The input parameters an operation declares — the variables it requires — each
+    with its name and type. Read from the operation's authoritative inputParameters
+    list, which is present across all service types (database, REST, script, …)."""
+    out = []
+    for p in (op.get("inputParameters") or []):
+        if isinstance(p, dict) and p.get("name"):
+            out.append({"name": p.get("name"), "type": p.get("type")})
+    return out
 
 
 def parse_service(data, ctx, ffile):
@@ -782,7 +769,7 @@ def parse_service(data, ctx, ffile):
             full = base.rstrip("/") + "/" + str(full).lstrip("/")
         info["operations"].append({"key": op.get("key"), "name": op.get("name"),
                                    "method": oc.get("method"), "url": oc.get("url"), "fullUrl": full,
-                                   "params": _operation_params(doc.get("type"), oc)})
+                                   "params": _operation_params(op)})
         if oc.get("method") or oc.get("url"):
             ctx["rest_calls"].append({"source": doc.get("key"), "sourceFile": ffile,
                                      "where": op.get("key"), "method": oc.get("method") or "?",
@@ -2517,7 +2504,7 @@ function detailExtra(n){
         (o.method?'<span class="verb" style="color:'+color("endpoint")+'">'+esc(o.method)+'</span>':'')+
         '<span>'+esc(o.fullUrl||o.url||o.name||'')+'</span>'+
         '<span class="muted" style="margin-left:auto">'+esc(o.key||'')+'</span>'+
-        ((o.params&&o.params.length)?'<div style="flex-basis:100%;font-size:10px;color:var(--ink-faint);padding:3px 0 0 2px">params: '+o.params.map(esc).join(', ')+'</div>':'')+
+        ((o.params&&o.params.length)?'<div style="flex-basis:100%;font-size:10px;color:var(--ink-faint);padding:3px 0 0 2px">params: '+o.params.map(p=>'<span style="color:var(--ink-dim)">'+esc(p.name)+'</span>'+(p.type?' '+esc(p.type):'')).join(', ')+'</div>':'')+
         '</div>').join('')+'</div>';
   }
   if(n.type==='service' && (d.columns||[]).length){
