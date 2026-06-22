@@ -1212,7 +1212,8 @@ def extract(root):
         if "databaseChangeLog" not in txt and "<changeSet" not in txt and "createTable" not in txt.lower():
             continue
         tables = sorted(set(re.findall(r'tableName="([^"]+)"', txt)))
-        result["liquibase"].append({"key": _liquibase_key(rel), "file": rel, "tables": tables})
+        result["liquibase"].append({"key": _liquibase_key(rel), "file": rel, "tables": tables,
+                                    "columns": _liquibase_columns(txt)})
 
     # Dedupe: the same model is often present both as loose files and inside a
     # -bar.zip; collapse identical refs / rest-calls / model entries.
@@ -1331,6 +1332,29 @@ def _container_of(path):
     return path.rsplit("/", 1)[0] if "/" in path else "."
 
 
+_LB_TABLE_BLOCK_RE = re.compile(r'<(?:createTable|addColumn)\b([^>]*)>(.*?)</(?:createTable|addColumn)>', re.S)
+_LB_COLUMN_RE = re.compile(r'<column\b([^>]*?)/?>')
+
+
+def _liquibase_columns(txt):
+    """Extract (table, column, type) triples from createTable/addColumn blocks of a
+    Liquibase changelog. Types may be raw (BIGINT) or property placeholders
+    (${varchar.type}(255)). Columns inside insert/update data blocks are ignored
+    (they carry no type), so only real schema columns are returned."""
+    cols = []
+    for m in _LB_TABLE_BLOCK_RE.finditer(txt):
+        tn = re.search(r'tableName="([^"]+)"', m.group(1))
+        table = tn.group(1) if tn else None
+        for cm in _LB_COLUMN_RE.finditer(m.group(2)):
+            attrs = cm.group(1)
+            name = re.search(r'\bname="([^"]+)"', attrs)
+            typ = re.search(r'\btype="([^"]+)"', attrs)
+            if name:
+                cols.append({"table": table, "name": name.group(1),
+                             "type": typ.group(1) if typ else None})
+    return cols
+
+
 def _liquibase_key(path):
     """Derive a liquibase model key from a changelog filename (the authoritative
     referencedLiquibaseModelKey points at this), e.g. liquibase-APP-L003.data.changelog.xml -> APP-L003."""
@@ -1410,7 +1434,7 @@ def _build_graph(result, ctx, resolved, all_java, bean_methods, by_key):
         add_node("action", a.get("key"), a.get("name"), a.get("file"), a)
     for lb in result["liquibase"]:
         add_node("liquibase", lb.get("key"), os.path.basename(lb["file"]), lb["file"],
-                 {"tables": lb.get("tables")})
+                 {"tables": lb.get("tables"), "columns": lb.get("columns")})
     for o in result["others"]:
         add_node(o.get("modelType", "other"), o.get("key"), o.get("name"), o.get("file"), o)
 
@@ -2451,7 +2475,7 @@ function describe(n){
   else if(n.type==='query'){ add('Source index',d.sourceIndex); add('Parameters',(d.parameters||[]).join(', ')); add('Filters by groups',(d.groups||[]).length); }
   else if(n.type==='action'){ add('Bot',d.botKey); add('Form',d.formKey); add('Triggers signal',d.signalName); add('Scope',d.scopeType); }
   else if(n.type==='bot'){ add('Kind',d.platform?'Flowable platform bot':'project-defined bot'); }
-  else if(n.type==='liquibase'){ add('Tables',(d.tables||[]).join(', ')); }
+  else if(n.type==='liquibase'){ add('Tables',(d.tables||[]).join(', ')); add('Columns',(d.columns||[]).length); }
   else if(n.type==='expression'||n.type==='binding'){ add('Used by', (d.usedBy||[]).length+' model(s)'); }
   else if(n.type==='variable'){ add('Scope',(d.scopes||[]).join(', ')); add('Used in', (d.usages||[]).length+' model(s)'); }
   else if(n.type==='string'){ add('Used in', (d.usages||[]).length+' model(s)'); }
@@ -2494,6 +2518,16 @@ function detailExtra(n){
       d.columns.map(c=>'<div class="oprow"><span>'+esc(c.name)+'</span><span class="muted">'+esc(c.label||'')+'</span>'+
         (c.type?'<span class="mono" style="margin-left:auto;color:var(--ink-faint);font-size:10px">'+esc(c.type)+'</span>':'')+
         '</div>').join('')+'</div>';
+  }
+  if(n.type==='liquibase' && (d.columns||[]).length){
+    const byT={}; d.columns.forEach(c=>{ (byT[c.table||'(table)']=byT[c.table||'(table)']||[]).push(c); });
+    h+='<h3 class="rel">Columns ('+d.columns.length+')</h3>';
+    Object.keys(byT).forEach(t=>{
+      h+='<div style="margin:6px 0 12px"><div class="muted mono" style="margin-bottom:4px">'+esc(t)+'</div><div class="oplist">'+
+        byT[t].map(c=>'<div class="oprow"><span>'+esc(c.name)+'</span>'+
+          (c.type?'<span class="mono" style="margin-left:auto;color:var(--ink-faint);font-size:10px">'+esc(c.type)+'</span>':'')+
+          '</div>').join('')+'</div></div>';
+    });
   }
   if((n.type==='expression'||n.type==='binding') && (d.usedBy||[]).length){
     h+='<h3 class="rel">Used by ('+d.usedBy.length+')</h3><div class="nodechips">'+d.usedBy.map(nodeChip).join('')+'</div>';
@@ -2607,6 +2641,7 @@ function searchText(n){
   if(n.type==='dataObject') s+=' '+(d.fields||[]).join(' ')+' '+
     (d.columns||[]).map(c=>(c.label||'')+' '+(c.type||'')).join(' ');
   if(n.type==='service') s+=' '+(d.columns||[]).map(c=>(c.name||'')+' '+(c.columnName||'')+' '+(c.type||'')).join(' ');
+  if(n.type==='liquibase') s+=' '+(d.columns||[]).map(c=>(c.name||'')+' '+(c.type||'')).join(' ');
   return s.toLowerCase();
 }
 function doSearch(){
